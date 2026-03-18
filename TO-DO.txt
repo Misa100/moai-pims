@@ -1,0 +1,106 @@
+PIMS
+
+Views
+	◦	Database Design (DONE)
+	◦	View - Intrastat (DONE)
+	◦	View - Margin Categories (DONE)
+	◦	View - Products (DONE)
+    ◦	View - Show Product Detail (DONE)
+	◦	View - General Configs (DONE)
+	◦	View - Progress logs (DONE)
+	◦	View - Dashboard (Showcasing metrics based on purchased products) 
+
+Feature
+	◦	Modify quantity stock in hand (DONE)
+	◦	Modify final price shop (DONE)
+	◦	Add new product using form create (Search Name, EAN Code, Quantity) (DONE)
+	◦	Import file for products (For non-existing SKU, it should create new records. For existing SKU, it should update the record) (DONE)
+	◦	Update of Intrastat tax rate (DONE)
+	◦	Update of margin category (DONE)
+
+Workflow 
+	◦	Retrieve product info from supplier API
+	◦	Create or update records in Supabase tables
+	◦	Process file import from Supabase Storage
+	◦	Ability to check for existing or new SKU for update or create process 
+	◦	Create or update products on Odoo 
+	◦	Retrieve rate from MRA API for Intrastat
+
+
+Note:
+	⁃	Any fields that affect the pricing calculation, should trigger the user for an immediate global update of price for each product on website 
+	⁃	The PIMS should be able to handle multi-tenancy 
+	⁃	All code flow and automation flow should function dynamically to cater the needs of multi-tenancy
+	⁃	Use of OpenAi to generate description of products 
+	⁃	Comparison tool to check the supplier invoice with the product list (To make use of OpenAi for the comparison algorithm)
+
+
+
+N8N workflow: 
+How to call it from N8N
+
+Supabase → “Call a Postgres Function (RPC)”
+Function: upsert_product_from_supplier
+Body:
+
+{ "p": {{$json}} }
+
+
+(Assumes $json in N8N holds the supplier product object.)
+
+Supabase SQL (Run Query) alternative:
+
+select * from public.upsert_product_from_supplier(:p::jsonb);
+
+
+with bind param p = {{$json}}.
+
+2) Optional: set requested quantity
+create or replace function public.set_product_quantity(p_product uuid, p_qty numeric)
+returns void language sql as $$
+  insert into public.product_prices(product_id, quantity)
+  values ($1, coalesce($2,0))
+  on conflict(product_id) do update
+    set quantity = coalesce(excluded.quantity,0),
+        updated_at = now();
+$$;
+
+
+N8N usage (after upsert returns product_id):
+Call RPC set_product_quantity with { p_product: {{$json.product_id}}, p_qty: {{$json.quantity}} }.
+
+3) Optional: bulk variant (array of objects)
+
+If you ever fetch in bulk:
+
+create or replace function public.upsert_products_from_supplier(p_list jsonb)
+returns table(product_id uuid, was_insert boolean, was_update boolean)
+language plpgsql
+as $$
+declare
+  rec jsonb;
+begin
+  if jsonb_typeof(p_list) <> 'array' then
+    raise exception 'p_list must be a JSON array';
+  end if;
+
+  for rec in select * from jsonb_array_elements(p_list)
+  loop
+    return query
+      select * from public.upsert_product_from_supplier(rec);
+  end loop;
+end $$;
+
+4) Notes / behavior
+
+Existing SKU = update: Your product record’s primary key is the supplier product_id (UUID). If the product already exists, the products UPSERT hits the on conflict(id) path (update). If you also have a unique index on search_name (SKU), that prevents duplicate SKUs. Your N8N flow should still fetch by SKU to obtain the supplier JSON, then call this function.
+
+Translations: English/French product texts are updated idempotently.
+
+Categories: Uses your upsert_category_path('category', [...]) and also builds catalog from catalogGroup / catalogSubgroup.
+
+Attributes: Creates color and material attribute options from the payload, with translations; links to the product.
+
+Composition: First entry of articleMaterialComposition is applied (you can easily extend to loop all).
+
+Prices: product_prices.price_supplier mirrors the latest exportPrice. duty_tax is set from intrastat_duty_tax when present, else 1. You can keep your triggers too—this UPSERT won’t fight them.
