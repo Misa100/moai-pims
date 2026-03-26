@@ -53,12 +53,14 @@ function toNumberOrZero(value: unknown): number {
 }
 
 export const ProductList = () => {
-    const { dataGridProps } = useDataGrid<FlatRow, HttpError>({
+    const { dataGridProps, setFilters } = useDataGrid<FlatRow, HttpError>({
         resource: "product_flat_table",
         initialPageSize: 25,
         syncWithLocation: true,
         sorters: { initial: [{ field: "modified_on", order: "desc" }] },
     });
+
+    const [search, setSearch] = React.useState("");
 
     const { mutate: updatePrice } = useUpdate();
     const invalidate = useInvalidate();
@@ -198,7 +200,22 @@ export const ProductList = () => {
                 slotProps={{
                     toolbar: {
                         showQuickFilter: true,
-                        quickFilterProps: { debounceMs: 400 },
+                        quickFilterProps: {
+                            debounceMs: 400,
+                            value: search,
+                            onChange: (e) => {
+                                const value = e.target.value;
+                                setSearch(value);
+
+                                setFilters([
+                                    {
+                                        field: "search_name",
+                                        operator: "contains",
+                                        value,
+                                    },
+                                ]);
+                            },
+                        },
                     },
                 }}
                 // Persist edits via the modern API
