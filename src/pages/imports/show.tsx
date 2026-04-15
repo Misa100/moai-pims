@@ -2,7 +2,17 @@ import * as React from "react";
 import { useParams } from "react-router-dom";
 import { useOne } from "@refinedev/core";
 import { Show, List, useDataGrid } from "@refinedev/mui";
-import { Box, Stack, Typography, Divider, Chip, Button } from "@mui/material";
+import {
+  Box,
+  Stack,
+  Typography,
+  Divider,
+  Chip,
+  Button,
+  Snackbar,
+  Alert,
+  CircularProgress,
+} from "@mui/material";
 import { DataGrid, GridColDef, GridToolbar } from "@mui/x-data-grid";
 import type { LogicalFilter } from "@refinedev/core";
 import { supabaseClient } from "../../utility";
@@ -25,22 +35,33 @@ const fmtDT = (v?: string | null) => {
 const BUCKET = "imports";
 const FOLDER = "generated_po";
 
+// ── N8N webhook URL ──────────────────────────────────────────────────────────
+const CREATE_PO_WEBHOOK_URL = `${import.meta.env.VITE_N8N_BASE_URL}${import.meta.env.VITE_WEBHOOK_CREATE_PO}`;
+
 const buildStoragePath = (input?: string | null) => {
   if (!input) return undefined;
-  const clean = String(input).replace(/^\/+/, ""); // remove any leading '/'
-  // If a full path is ever passed, keep it if it already targets the folder.
+  const clean = String(input).replace(/^\/+/, "");
   if (clean.startsWith(`${FOLDER}/`)) return clean;
-
-  // Otherwise assume it's just a filename and prepend the folder
   const fileOnly = clean.split("/").pop() ?? clean;
   return `${FOLDER}/${fileOnly}`;
 };
 
 export const ImportBatchShow: React.FC = () => {
   const { id } = useParams();
-  const [ downloading, setDownloading ] = React.useState(false);
 
-  // fetch the batch header
+  const [downloading, setDownloading] = React.useState(false);
+  const [creatingPO, setCreatingPO] = React.useState(false);
+
+  // Snackbar state
+  const [snack, setSnack] = React.useState<{
+    open: boolean;
+    severity: "success" | "error";
+    message: string;
+  }>({ open: false, severity: "success", message: "" });
+
+  const closeSnack = () => setSnack((s) => ({ ...s, open: false }));
+
+  // ── Fetch batch header ─────────────────────────────────────────────────────
   const { data: batch, isLoading: isBatchLoading } = useOne({
     resource: "v_product_import_batch_stats",
     id,
@@ -48,12 +69,10 @@ export const ImportBatchShow: React.FC = () => {
     queryOptions: { enabled: !!id },
   });
 
-  // make the filter permanent and reactive to `id`
+  // ── Permanent filter for items grid ───────────────────────────────────────
   const permanentFilters: LogicalFilter[] = React.useMemo(
     () =>
-      id
-        ? [{ field: "batch_id", operator: "eq" as const, value: id }]
-        : [],
+      id ? [{ field: "batch_id", operator: "eq" as const, value: id }] : [],
     [id]
   );
 
@@ -63,7 +82,6 @@ export const ImportBatchShow: React.FC = () => {
     initialPageSize: 50,
     liveMode: "auto",
     sorters: { initial: [{ field: "created_at", order: "asc" }] },
-    // don't fetch until we have the route param
     queryOptions: { enabled: !!id, keepPreviousData: true },
   });
 
@@ -86,6 +104,7 @@ export const ImportBatchShow: React.FC = () => {
     []
   );
 
+  // ── Download PO (unchanged logic) ─────────────────────────────────────────
   const handleDownload = async () => {
     const path = buildStoragePath(batch?.data?.po_file_path);
     if (!path) return;
@@ -93,25 +112,20 @@ export const ImportBatchShow: React.FC = () => {
     try {
       setDownloading(true);
 
-      // 1) get a short-lived signed URL
-      const { data, error } = await supabaseClient
-        .storage
-        .from(BUCKET) 
-        .createSignedUrl(path, 60); 
+      const { data, error } = await supabaseClient.storage
+        .from(BUCKET)
+        .createSignedUrl(path, 60);
 
       if (error || !data?.signedUrl) throw error ?? new Error("No signed URL");
 
-      // 2) download (keeps your desired filename)
       const res = await fetch(data.signedUrl);
       if (!res.ok) throw new Error("Failed to fetch file");
       const blob = await res.blob();
 
-      const fileName =
-        path.split("/").pop() || "download.xlsx";
-
+      const fileName = path.split("/").pop() || "download.xlsx";
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
-      a.download = fileName; // forces "Save As"
+      a.download = fileName;
       document.body.appendChild(a);
       a.click();
       URL.revokeObjectURL(a.href);
@@ -124,6 +138,45 @@ export const ImportBatchShow: React.FC = () => {
     }
   };
 
+  // ── Create PO in Odoo via n8n webhook ─────────────────────────────────────
+  const handleCreatePO = async () => {
+    if (!id) return;
+    try {
+      setCreatingPO(true);
+
+      const res = await fetch(CREATE_PO_WEBHOOK_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ batch_id: id }),
+      });
+
+      if (!res.ok) throw new Error(`Webhook error: ${res.status}`);
+
+      const data = await res.json();
+
+      if (data?.success && data?.po_name) {
+        setSnack({
+          open: true,
+          severity: "success",
+          message: `PO created successfully: ${data.po_name}`,
+        });
+      } else {
+        throw new Error("Unexpected response from webhook");
+      }
+    } catch (e) {
+      console.error(e);
+      setSnack({
+        open: true,
+        severity: "error",
+        message: "Failed to create PO in Odoo. Please try again.",
+      });
+    } finally {
+      setCreatingPO(false);
+    }
+  };
+
+  const hasPOFile = !!batch?.data?.po_file_path;
+
   return (
     <Show
       title="Import Batch"
@@ -132,14 +185,31 @@ export const ImportBatchShow: React.FC = () => {
       isLoading={isBatchLoading}
       goBack={false}
       headerButtons={
-        <Button
-          variant="contained"
-          onClick={handleDownload}
-          disabled={!batch?.data?.po_file_path || downloading}
-        >
-          {downloading ? "Downloading..." : "Download PO"}
-        </Button>
-        }
+        <Stack direction="row" spacing={1}>
+          {/* Download PO — same logic as before */}
+          <Button
+            variant="outlined"
+            onClick={handleDownload}
+            disabled={!hasPOFile || downloading}
+          >
+            {downloading ? "Downloading..." : "Download PO"}
+          </Button>
+
+          {/* Create PO in Odoo — same activation condition as Download PO */}
+          <Button
+            variant="contained"
+            onClick={handleCreatePO}
+            disabled={!hasPOFile || creatingPO}
+            startIcon={
+              creatingPO ? (
+                <CircularProgress size={16} color="inherit" />
+              ) : undefined
+            }
+          >
+            {creatingPO ? "Creating PO..." : "Create PO in Odoo"}
+          </Button>
+        </Stack>
+      }
     >
       <Stack spacing={2}>
         <Box>
@@ -150,7 +220,11 @@ export const ImportBatchShow: React.FC = () => {
 
           <Stack direction="row" spacing={2} sx={{ mt: 1 }}>
             <Chip size="small" label={batch?.data?.source ?? "—"} />
-            <Chip size="small" color="primary" label={batch?.data?.status ?? "—"} />
+            <Chip
+              size="small"
+              color="primary"
+              label={batch?.data?.status ?? "—"}
+            />
           </Stack>
 
           <Stack direction="row" spacing={4} sx={{ mt: 1 }}>
@@ -190,6 +264,23 @@ export const ImportBatchShow: React.FC = () => {
           />
         </List>
       </Stack>
+
+      {/* Confirmation / error snackbar */}
+      <Snackbar
+        open={snack.open}
+        autoHideDuration={6000}
+        onClose={closeSnack}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+      >
+        <Alert
+          onClose={closeSnack}
+          severity={snack.severity}
+          variant="filled"
+          sx={{ width: "100%" }}
+        >
+          {snack.message}
+        </Alert>
+      </Snackbar>
     </Show>
   );
 };

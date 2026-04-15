@@ -24,6 +24,10 @@ _.ntvs_
 _.njsproj
 _.sln
 \*.sw?
+.env*
 
 ./TO-DO.txt
 ./N8N.sql
+data.sql
+schema.sql
+/supabase
