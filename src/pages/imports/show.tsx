@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useParams } from "react-router-dom";
-import { useOne } from "@refinedev/core";
+import { useOne, useInvalidate } from "@refinedev/core";
 import { Show, List, useDataGrid } from "@refinedev/mui";
 import {
   Box,
@@ -46,18 +46,19 @@ const buildStoragePath = (input?: string | null) => {
   return `${FOLDER}/${fileOnly}`;
 };
 
+type SnackState = { open: boolean; severity: "success" | "error" | "info" | "warning"; message: string; };
+
 export const ImportBatchShow: React.FC = () => {
   const { id } = useParams();
+  const invalidate = useInvalidate();
 
   const [downloading, setDownloading] = React.useState(false);
   const [creatingPO, setCreatingPO] = React.useState(false);
+  const [cancelling, setCancelling] = React.useState(false);
+  const showSnack = (severity: SnackState["severity"], message: string) => setSnack({ open: true, severity, message });
 
   // Snackbar state
-  const [snack, setSnack] = React.useState<{
-    open: boolean;
-    severity: "success" | "error";
-    message: string;
-  }>({ open: false, severity: "success", message: "" });
+  const [snack, setSnack] = React.useState<SnackState>({ open: false, severity: "info", message: "", });
 
   const closeSnack = () => setSnack((s) => ({ ...s, open: false }));
 
@@ -177,6 +178,65 @@ export const ImportBatchShow: React.FC = () => {
 
   const hasPOFile = !!batch?.data?.po_file_path;
 
+  const handleCancel = async () => {
+    if (!id) return;
+
+    try {
+      setCancelling(true);
+
+      // 1 — Cancel items encore en queue
+      const { error: itemsError } = await supabaseClient
+        .from("product_import_items")
+        .update({
+          status: "cancelled",
+          error_message: "Import annulé manuellement",
+          updated_at: new Date().toISOString(),
+        })
+        .eq("batch_id", id)
+        .eq("status", "queued");
+
+      if (itemsError) throw itemsError;
+
+      // 2 — Cancel batch
+      const { error: batchError } = await supabaseClient
+        .from("product_import_batches")
+        .update({
+          status: "cancelled",
+          finished_at: new Date().toISOString(),
+          note: "Import annulé manuellement",
+        })
+        .eq("id", id);
+
+      if (batchError) throw batchError;
+
+      showSnack("warning", "Import annulé.");
+
+      // Refresh UI
+      await invalidate({
+        resource: "v_product_import_batch_stats",
+        invalidates: ["detail"],
+        id,
+      });
+
+      await invalidate({
+        resource: "v_product_import_items",
+        invalidates: ["list"],
+      });
+
+    } catch (e: unknown) {
+      console.error(e);
+      const message =
+        e instanceof Error ? e.message : "Failed to cancel import";
+      showSnack("error", message);
+    } finally {
+      setCancelling(false);
+    }
+  };
+
+  const batchStatus = batch?.data?.status;
+
+  const canCancel = !cancelling && batchStatus === "queued";
+
   return (
     <Show
       title="Import Batch"
@@ -186,6 +246,14 @@ export const ImportBatchShow: React.FC = () => {
       goBack={false}
       headerButtons={
         <Stack direction="row" spacing={1}>
+          {/* Cancel — only visible when batch is queued */}
+          {canCancel && (
+            <Button
+              variant="outlined"
+              color="error"
+              onClick={handleCancel}
+              disabled={cancelling} > {cancelling ? "Cancelling..." : "Cancel Import"}
+            </Button>)}
           {/* Download PO — same logic as before */}
           <Button
             variant="outlined"
@@ -220,11 +288,8 @@ export const ImportBatchShow: React.FC = () => {
 
           <Stack direction="row" spacing={2} sx={{ mt: 1 }}>
             <Chip size="small" label={batch?.data?.source ?? "—"} />
-            <Chip
-              size="small"
-              color="primary"
-              label={batch?.data?.status ?? "—"}
-            />
+            <Chip size="small"
+              color={batchStatus === "done" ? "success" : batchStatus === "error" ? "error" : batchStatus === "cancelled" ? "warning" : "primary"} label={batchStatus ?? "—"} />
           </Stack>
 
           <Stack direction="row" spacing={4} sx={{ mt: 1 }}>
