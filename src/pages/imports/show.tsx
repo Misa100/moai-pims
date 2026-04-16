@@ -258,7 +258,7 @@ export const ImportBatchShow: React.FC = () => {
           <Button
             variant="outlined"
             onClick={handleDownload}
-            disabled={!hasPOFile || downloading}
+            disabled={batchStatus !== "done" || downloading}
           >
             {downloading ? "Downloading..." : "Download PO"}
           </Button>
@@ -267,7 +267,7 @@ export const ImportBatchShow: React.FC = () => {
           <Button
             variant="contained"
             onClick={handleCreatePO}
-            disabled={!hasPOFile || creatingPO}
+            disabled={batchStatus !== "done" || creatingPO}
             startIcon={
               creatingPO ? (
                 <CircularProgress size={16} color="inherit" />
