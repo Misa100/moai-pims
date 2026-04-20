@@ -235,7 +235,7 @@ export const ImportBatchShow: React.FC = () => {
 
   const batchStatus = batch?.data?.status;
 
-  const canCancel = !cancelling && batchStatus === "queued";
+  const canCancel = !cancelling && batchStatus === "queued" || "processing";
 
   return (
     <Show
