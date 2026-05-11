@@ -55,6 +55,7 @@ export const ImportBatchShow: React.FC = () => {
   const [downloading, setDownloading] = React.useState(false);
   const [creatingPO, setCreatingPO] = React.useState(false);
   const [cancelling, setCancelling] = React.useState(false);
+  const [reseting, setReseting] = React.useState(false);
   const showSnack = (severity: SnackState["severity"], message: string) => setSnack({ open: true, severity, message });
 
   // Snackbar state
@@ -176,7 +177,68 @@ export const ImportBatchShow: React.FC = () => {
     }
   };
 
-  const hasPOFile = !!batch?.data?.po_file_path;
+  // ── Reset stuck import (séquentiel comme tes requêtes SQL) ──
+  const handleReset = async () => {
+    if (!id) return;
+    try {
+      setReseting(true);
+
+      // ÉTAPE 1 : Reset items (attendre la fin avant de continuer)
+      const { data: updatedItems, error: itemsError } = await supabaseClient
+        .from("product_import_items")
+        .update({
+          status: "queued",
+          updated_at: new Date().toISOString(),
+          attempts: 0,
+          error_message: null,
+        })
+        .eq("batch_id", id)
+        .eq("status", "processing")
+        .select("id");
+
+      if (itemsError) throw itemsError;
+
+      const itemsCount = updatedItems?.length ?? 0;
+
+      // ÉTAPE 2 : Reset batch UNIQUEMENT après que les items soient done
+      const { error: batchError } = await supabaseClient
+        .from("product_import_batches")
+        .update({ status: "queued" })
+        .eq("id", id);
+
+      if (batchError) throw batchError;
+
+      // ÉTAPE 3 : Reset tous les produits bloqués en processing
+      const { error: productsError } = await supabaseClient
+        .from("products")
+        .update({ sync_status: "pending" })
+        .eq("sync_status", "processing");
+
+      if (productsError) throw productsError;
+
+      showSnack(
+        "success",
+        `Import reset successfully. ${itemsCount} item(s) reset to queued.`
+      );
+
+      // Refresh UI après les deux updates
+      await invalidate({
+        resource: "v_product_import_batch_stats",
+        invalidates: ["detail"],
+        id,
+      });
+
+      await invalidate({
+        resource: "v_product_import_items",
+        invalidates: ["list"],
+      });
+    } catch (e: unknown) {
+      console.error("❌ Reset failed:", e);
+      showSnack("error", e instanceof Error ? e.message : "Failed to reset import");
+    } finally {
+      setReseting(false);
+    }
+  };
 
   const handleCancel = async () => {
     if (!id) return;
@@ -211,7 +273,7 @@ export const ImportBatchShow: React.FC = () => {
 
       showSnack("warning", "Import annulé.");
 
-      // Refresh UI
+      // Reset UI
       await invalidate({
         resource: "v_product_import_batch_stats",
         invalidates: ["detail"],
@@ -236,6 +298,7 @@ export const ImportBatchShow: React.FC = () => {
   const batchStatus = batch?.data?.status;
 
   const canCancel = !cancelling && ["queued", "processing"].includes(batchStatus);
+  const canReset = !reseting && batchStatus === "processing";
 
   return (
     <Show
@@ -246,7 +309,24 @@ export const ImportBatchShow: React.FC = () => {
       goBack={false}
       headerButtons={
         <Stack direction="row" spacing={1}>
-          {/* Cancel — only visible when batch is queued */}
+          {/* Reset — visible when batch is processing (stuck items) */}
+          {canReset && (
+            <Button
+              variant="outlined"
+              color="warning"
+              onClick={handleReset}
+              disabled={reseting}
+              startIcon={
+                reseting ? (
+                  <CircularProgress size={16} color="inherit" />
+                ) : undefined
+              }
+            >
+              {reseting ? "Reseting..." : "Reset IMPORT"}
+            </Button>
+          )}
+
+          {/* Cancel — only visible when batch is queued or processing */}
           {canCancel && (
             <Button
               variant="outlined"
