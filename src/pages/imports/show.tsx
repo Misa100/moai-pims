@@ -183,7 +183,7 @@ export const ImportBatchShow: React.FC = () => {
     try {
       setReseting(true);
 
-      // ÉTAPE 1 : Reset items (attendre la fin avant de continuer)
+      // ÉTAPE 1 : Reset items du batch courant
       const { data: updatedItems, error: itemsError } = await supabaseClient
         .from("product_import_items")
         .update({
@@ -194,13 +194,14 @@ export const ImportBatchShow: React.FC = () => {
         })
         .eq("batch_id", id)
         .eq("status", "processing")
-        .select("id");
+        .select("id, sku");
 
       if (itemsError) throw itemsError;
 
       const itemsCount = updatedItems?.length ?? 0;
+      console.log("🚀 ~ handleReset ~ itemsCount:", itemsCount);
 
-      // ÉTAPE 2 : Reset batch UNIQUEMENT après que les items soient done
+      // ÉTAPE 2 : Reset batch après que les items soient done
       const { error: batchError } = await supabaseClient
         .from("product_import_batches")
         .update({ status: "queued" })
@@ -208,20 +209,26 @@ export const ImportBatchShow: React.FC = () => {
 
       if (batchError) throw batchError;
 
-      // ÉTAPE 3 : Reset tous les produits bloqués en processing
-      const { error: productsError } = await supabaseClient
-        .from("products")
-        .update({ sync_status: "pending" })
-        .eq("sync_status", "processing");
+      // ÉTAPE 3 : Reset uniquement les produits liés à ce batch
+      if (itemsCount > 0) {
+        const skus = updatedItems.map((item) => item.sku).filter(Boolean);
 
-      if (productsError) throw productsError;
+        if (skus.length > 0) {
+          const { error: productsError } = await supabaseClient
+            .from("products")
+            .update({ sync_status: "pending" })
+            .in("sku", skus)
+            .eq("sync_status", "processing");
+
+          if (productsError) throw productsError;
+        }
+      }
 
       showSnack(
         "success",
         `Import reset successfully. ${itemsCount} item(s) reset to queued.`
       );
 
-      // Refresh UI après les deux updates
       await invalidate({
         resource: "v_product_import_batch_stats",
         invalidates: ["detail"],
