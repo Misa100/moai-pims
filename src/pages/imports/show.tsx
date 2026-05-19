@@ -16,6 +16,7 @@ import {
 import { DataGrid, GridColDef, GridToolbar } from "@mui/x-data-grid";
 import type { LogicalFilter } from "@refinedev/core";
 import { supabaseClient } from "../../utility";
+import { Dialog, DialogTitle, DialogContent, DialogActions, TextField } from "@mui/material";
 
 const dt = new Intl.DateTimeFormat("en-MU", {
   year: "numeric",
@@ -60,6 +61,14 @@ export const ImportBatchShow: React.FC = () => {
 
   // Snackbar state
   const [snack, setSnack] = React.useState<SnackState>({ open: false, severity: "info", message: "", });
+
+  const [poDialogOpen, setPoDialogOpen] = React.useState(false);
+  const [plannedDate, setPlannedDate] = React.useState<string>(() => {
+    // Défaut : aujourd'hui + 30 jours
+    const d = new Date();
+    d.setDate(d.getDate() + 30);
+    return d.toISOString().split("T")[0]; // format YYYY-MM-DD
+  });
 
   const closeSnack = () => setSnack((s) => ({ ...s, open: false }));
 
@@ -149,29 +158,23 @@ export const ImportBatchShow: React.FC = () => {
       const res = await fetch(CREATE_PO_WEBHOOK_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ batch_id: id }),
+        body: JSON.stringify({
+          batch_id: id,
+          date_planned: plannedDate, // ✅ ajout
+        }),
       });
 
       if (!res.ok) throw new Error(`Webhook error: ${res.status}`);
-
       const data = await res.json();
 
       if (data?.success && data?.po_name) {
-        setSnack({
-          open: true,
-          severity: "success",
-          message: `PO created successfully: ${data.po_name}`,
-        });
+        showSnack("success", `PO created successfully: ${data.po_name}`);
       } else {
         throw new Error("Unexpected response from webhook");
       }
     } catch (e) {
       console.error(e);
-      setSnack({
-        open: true,
-        severity: "error",
-        message: "Failed to create PO in Odoo. Please try again.",
-      });
+      showSnack("error", "Failed to create PO in Odoo. Please try again.");
     } finally {
       setCreatingPO(false);
     }
@@ -353,12 +356,10 @@ export const ImportBatchShow: React.FC = () => {
           {/* Create PO in Odoo — same activation condition as Download PO */}
           <Button
             variant="contained"
-            onClick={handleCreatePO}
+            onClick={() => setPoDialogOpen(true)}
             disabled={batchStatus !== "done" || creatingPO}
             startIcon={
-              creatingPO ? (
-                <CircularProgress size={16} color="inherit" />
-              ) : undefined
+              creatingPO ? <CircularProgress size={16} color="inherit" /> : undefined
             }
           >
             {creatingPO ? "Creating PO..." : "Create PO in Odoo"}
@@ -416,6 +417,45 @@ export const ImportBatchShow: React.FC = () => {
           />
         </List>
       </Stack>
+
+      <Dialog open={poDialogOpen} onClose={() => setPoDialogOpen(false)}>
+        <DialogTitle>Create PO in Odoo</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" sx={{ mb: 2 }}>
+            Set the expected arrival date for this purchase order.
+            This date will be used as the scheduled delivery date in Odoo.
+          </Typography>
+          <TextField
+            label="Expected Arrival Date"
+            type="date"
+            fullWidth
+            value={plannedDate}
+            onChange={(e) => setPlannedDate(e.target.value)}
+            InputLabelProps={{ shrink: true }}
+            inputProps={{ min: new Date().toISOString().split("T")[0] }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setPoDialogOpen(false)} disabled={creatingPO}>
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            disabled={!plannedDate || creatingPO}
+            startIcon={
+              creatingPO ? (
+                <CircularProgress size={16} color="inherit" />
+              ) : undefined
+            }
+            onClick={async () => {
+              setPoDialogOpen(false); // ferme le dialog
+              await handleCreatePO(); // le spinner apparaît sur le bouton header
+            }}
+          >
+            {creatingPO ? "Creating..." : "Confirm & Create PO"}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {/* Confirmation / error snackbar */}
       <Snackbar
